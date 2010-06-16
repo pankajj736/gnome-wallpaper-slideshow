@@ -21,6 +21,7 @@ import os
 import gtk, gobject
 import gconf
 import libxml2
+import sys, getopt
 
 class GTK_Main:
     
@@ -102,7 +103,7 @@ class GTK_Main:
                 self.files = []
                 accepted = ('.jpg', '.jpeg', '.gif', '.png')
                 for file in os.listdir(settings['Folder']):
-                    if os.path.splitext(file)[1] in accepted:
+                    if os.path.splitext(file)[1].lower() in accepted:
                         self.files.append(os.path.join(settings['Folder'], file))
                 if len(self.files):
                     self.ok_button.set_sensitive(True)
@@ -155,7 +156,7 @@ class GTK_Main:
             self.files = []
             accepted = ('.jpg', '.jpeg', '.gif', '.png')
             for file in os.listdir(filename):
-                if os.path.splitext(file)[1] in accepted:
+                if os.path.splitext(file)[1].lower() in accepted:
                     self.files.append(os.path.join(filename, file))
             
             if len(self.files):
@@ -170,6 +171,7 @@ class GTK_Main:
                 dialog.run()
         
     def ok_button_clicked(self, button):
+        self.files = sorted(self.files)
         nfiles = len(self.files)
         if nfiles <= 0:
             return False
@@ -177,13 +179,13 @@ class GTK_Main:
         # Read settings
         folder = self.folder_entry.get_text()
 
-        picture_duration = int(self.pdur_spinner.get_text())
+        picture_duration = float(self.pdur_spinner.get_text())
         if self.pdur_combo.get_active_text() == "min":
             picture_duration = picture_duration * 60
         elif self.pdur_combo.get_active_text() == "hr":
             picture_duration = picture_duration * 60 * 60
         
-        transition_duration = int(self.tdur_spinner.get_text())
+        transition_duration = float(self.tdur_spinner.get_text())
         if self.tdur_combo.get_active_text() == "min":
             transition_duration = transition_duration * 60
         elif self.tdur_combo.get_active_text() == "hr":
@@ -274,7 +276,133 @@ class GTK_Main:
         # Exit gtk main loop
         gtk.main_quit()
 
+def main(argv):
+    # Set default durations
+    picture_duration = 300.0
+    transition_duration = 5.0
+
+    # Parse the command line arguments
+    try:
+        opts, args = getopt.getopt(argv, "hp:t:", ["help", "picture-duration=", "transition-duration="])
+        for opt, arg in opts:
+            if opt in ("-h", "--help"):
+                usage()
+                sys.exit(0)
+            elif opt in ("-p", "--picture-duration"):
+                if arg.isdigit():
+                    picture_duration = float(arg)
+                else:
+                    usage()
+                    sys.exit(1)
+            elif opt in ("-t", "--transition-duration"):
+                if arg.isdigit():
+                    transition_duration = float(arg)
+                else:
+                    usage()
+                    sys.exit(1)
+    except getopt.GetoptError:
+        usage()
+        sys.exit(2)
+
+    # Make sure folder exists before continuing
+    folder = "".join(args)
+    if not os.path.isdir(folder):
+        print "Folder '" + folder + "' does not exist."
+        sys.exit(1)
+
+    # Search for valid files
+    files = []
+    accepted = ('.jpg', '.jpeg', '.gif', '.png')
+    for file in os.listdir(folder):
+        if os.path.splitext(file)[1].lower() in accepted:
+            files.append(os.path.join(folder, file))
+    files = sorted(files)
+    
+    # Exit if no images found
+    nfiles = len(files)
+    if nfiles < 1:
+        print "Folder '" + folder + "' contains no images."
+        sys.exit(1)
+
+    # Create wallpaper xml
+    doc = libxml2.parseDoc("""<background><starttime><year>2010</year><month>01</month><day>01</day><hour>00</hour><minute>00</minute><second>00</second></starttime></background>""")
+    root = doc.getRootElement()
+    
+    for i in range(0, nfiles):
+        static = root.newChild(None, "static", None)
+        static.addChild(static.newChild(None, "duration", str(picture_duration)))
+        static.addChild(static.newChild(None, "file", files[i]))
+        root.addChild(static)
+
+        if transition_duration <= 0: continue
+
+        transition = root.newChild(None, "transition", None)
+        transition.addChild(transition.newProp("type", "overlay"))
+        transition.addChild(transition.newChild(None, "duration", str(transition_duration)))
+        transition.addChild(transition.newChild(None, "from", files[i]))
+        if i < nfiles-1:
+            transition.addChild(transition.newChild(None, "to", files[i+1]))
+        else:
+            transition.addChild(transition.newChild(None, "to", files[0]))
+        root.addChild(transition)
+        
+    # Write XML file
+    if not os.path.exists(os.path.expanduser("~/.gnome-wallpaper-slideshow")):
+        os.mkdir(os.path.expanduser("~/.gnome-wallpaper-slideshow"), 0755)
+    xml_file_path = os.path.expanduser("~/.gnome-wallpaper-slideshow/gnome-wallpaper-slideshow.xml")
+    try:
+        doc.saveFormatFileEnc(xml_file_path, "utf-8", 1)
+    except IOError:
+        print "Failed to write file."
+        sys.exit(2)
+    
+    # Parse gnome backgrounds.xml file
+    backgrounds_file = os.path.expanduser("~/.gnome2/backgrounds.xml")
+    doc = libxml2.parseFile(backgrounds_file)
+    root = doc.getRootElement()
+    
+    # Look for existing wallpaper entry
+    ctxt = doc.xpathNewContext()
+    res = ctxt.xpathEval("/wallpapers/wallpaper[filename=\""+xml_file_path+"\"]")
+    
+    # If no entry exists, add one
+    if len(res) == 0:
+        wallpaper = root.newChild(None, "wallpaper", None)
+        wallpaper.addChild(wallpaper.newProp("deleted", "false"))
+        wallpaper.addChild(wallpaper.newChild(None, "name", "gnome-wallpaper-slideshow"))
+        wallpaper.addChild(wallpaper.newChild(None, "filename", xml_file_path))
+        wallpaper.addChild(wallpaper.newChild(None, "options", "stretched"))
+        wallpaper.addChild(wallpaper.newChild(None, "shade_type", "solid"))
+        wallpaper.addChild(wallpaper.newChild(None, "pcolor", "#2c2c00001e1e"))
+        wallpaper.addChild(wallpaper.newChild(None, "scolor", "#2c2c00001e1e"))
+        root.addChild(wallpaper)
+
+        try:
+            doc.saveFormatFileEnc(backgrounds_file, "utf-8", 1)
+        except IOError:
+            print "Failed to write file."
+            sys.exit(2)
+    
+    # Set xml file as current background
+    conf_client = gconf.client_get_default()
+    conf_client.add_dir("/desktop/gnome/background", gconf.CLIENT_PRELOAD_NONE)
+    conf_client.set_string("/desktop/gnome/background/picture_filename", xml_file_path)
+    conf_client.set_string("/desktop/gnome/background/picture_options", "stretched")
+
+def usage():
+    print "Usage: gnome-wallpaper-slideshow [OPTION]... FOLDER"
+    print "Set images in FOLDER as Gnome wallpaper slideshow"
+    print ""
+    print "-h, --help                           display this help and exit"
+    print "-p, --picture-duration=SECONDS       duration to display each picture"
+    print "-t, --transition-duration=SECONDS    duration to display each transition"
+    print ""
+    print "By default, pictures will be displayed alphabetically for 300 seconds (5 minutes) with a 5 second transition."
+
 if __name__ == "__main__":
-    GTK_Main()
-    gtk.gdk.threads_init()
-    gtk.main()
+    if (len(sys.argv) > 1):
+        main(sys.argv[1:])
+    else:
+        GTK_Main()
+        gtk.gdk.threads_init()
+        gtk.main()
