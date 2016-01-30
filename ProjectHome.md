@@ -1,0 +1,1 @@
+A simple utility written in Python and GTK+ to create a backgrounds.xml file from a folder of images and set it as the current desktop wallpaper. Gnome will read this XML file and cycle through each of the images it contains at user defined intervals as a slideshow with optional transitions.
